@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Voice Chatbot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: #1f2937;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4">
+
+    <div class="flex flex-col items-center w-full max-w-2xl bg-white shadow-xl rounded-2xl p-8 space-y-6">
+        <h1 class="text-3xl font-bold text-center text-gray-800">Revolt Motors Voice Chat</h1>
+        <p class="text-center text-gray-600">Interact with the AI using your voice. The AI will respond in real-time.</p>
+
+        <!-- Status Display and Conversation Log -->
+        <div class="w-full h-80 bg-gray-50 rounded-lg p-4 overflow-y-auto border border-gray-200">
+            <p id="status-display" class="text-center text-gray-500 font-medium">Status: Idle</p>
+            <div id="conversation-log" class="mt-4 space-y-2">
+                <!-- Conversation messages will be appended here -->
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4 w-full justify-center">
+            <button id="start-btn"
+                    class="w-full sm:w-1/2 md:w-auto px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl shadow-md hover:bg-blue-700 transition duration-300 ease-in-out">
+                Start Listening
+            </button>
+            <button id="stop-btn"
+                    class="w-full sm:w-1/2 md:w-auto px-6 py-3 bg-red-600 text-white font-semibold rounded-xl shadow-md hover:bg-red-700 transition duration-300 ease-in-out" disabled>
+                Stop
+            </button>
+        </div>
+
+        <!-- Message Box for Alerts and Errors -->
+        <div id="message-box" class="w-full hidden p-4 bg-red-100 text-red-700 rounded-lg border border-red-200">
+            <p id="message-text" class="text-sm font-medium"></p>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const startBtn = document.getElementById('start-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            const statusDisplay = document.getElementById('status-display');
+            const conversationLog = document.getElementById('conversation-log');
+            const messageBox = document.getElementById('message-box');
+            const messageText = document.getElementById('message-text');
+
+            let recognition = null;
+            let audioContext = null;
+            let audioQueue = [];
+            let isPlaying = false;
+
+            // Display a message in the UI
+            function showMessage(text, isError = false) {
+                messageText.textContent = text;
+                messageBox.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-green-100', 'text-green-700');
+                if (isError) {
+                    messageBox.classList.add('bg-red-100', 'text-red-700');
+                } else {
+                    messageBox.classList.add('bg-green-100', 'text-green-700');
+                }
+            }
+
+            // Append a message to the conversation log
+            function appendMessage(sender, text) {
+                const messageElement = document.createElement('div');
+                messageElement.classList.add('p-3', 'rounded-xl', 'shadow-sm', 'max-w-xs', 'break-words');
+                if (sender === 'user') {
+                    messageElement.classList.add('bg-blue-100', 'text-blue-800', 'ml-auto');
+                    messageElement.textContent = `You: ${text}`;
+                } else {
+                    messageElement.classList.add('bg-gray-200', 'text-gray-800');
+                    messageElement.textContent = `AI: ${text}`;
+                }
+                conversationLog.appendChild(messageElement);
+                conversationLog.scrollTop = conversationLog.scrollHeight;
+            }
+
+            // Play the next audio chunk in the queue
+            async function playNextAudioChunk() {
+                if (audioQueue.length > 0 && !isPlaying) {
+                    const base64Data = audioQueue.shift();
+                    const audioData = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0)).buffer;
+                    const pcmData = new Int16Array(audioData);
+
+                    if (!audioContext) {
+                        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                    }
+
+                    const audioBuffer = audioContext.createBuffer(1, pcmData.length, audioContext.sampleRate);
+                    audioBuffer.copyToChannel(Float32Array.from(pcmData, sample => sample / 32768), 0);
+
+                    const audioSource = audioContext.createBufferSource();
+                    audioSource.buffer = audioBuffer;
+                    audioSource.connect(audioContext.destination);
+
+                    audioSource.onended = () => {
+                        isPlaying = false;
+                        playNextAudioChunk();
+                    };
+
+                    isPlaying = true;
+                    audioSource.start();
+                }
+            }
+
+            // Main function to handle speech recognition and API call
+            async function startVoiceRecognition() {
+                if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+                    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                    recognition = new SpeechRecognition();
+                    recognition.interimResults = false;
+                    recognition.lang = 'en-US';
+
+                    recognition.onstart = () => {
+                        console.log('Speech recognition started.');
+                        statusDisplay.textContent = 'Status: Listening...';
+                        startBtn.disabled = true;
+                        stopBtn.disabled = false;
+                    };
+
+                    recognition.onresult = async (event) => {
+                        const transcript = event.results[0][0].transcript;
+                        appendMessage('user', transcript);
+                        statusDisplay.textContent = 'Status: Thinking...';
+
+                        try {
+                            const response = await fetch('/generate-audio', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({ text: transcript })
+                            });
+
+                            if (!response.ok) {
+                                throw new Error(`HTTP error! status: ${response.status}`);
+                            }
+
+                            const reader = response.body.getReader();
+                            let result;
+                            let buffer = '';
+
+                            while (!result.done) {
+                                result = await reader.read();
+                                const decoder = new TextDecoder();
+                                buffer += decoder.decode(result.value, { stream: true });
+                                
+                                // Process chunks as they arrive.
+                                const parts = buffer.split('}');
+                                buffer = parts.pop(); // Keep the last, incomplete part
+
+                                for (const part of parts) {
+                                    if (part.trim()) {
+                                        try {
+                                            const data = JSON.parse(part + '}');
+                                            if (data.audioData) {
+                                                audioQueue.push(data.audioData);
+                                                playNextAudioChunk();
+                                                statusDisplay.textContent = 'Status: Speaking...';
+                                            }
+                                        } catch (e) {
+                                            console.error('Error parsing JSON chunk:', e);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Acknowledge the end of the AI's response after a delay
+                            setTimeout(() => {
+                                startBtn.disabled = false;
+                                statusDisplay.textContent = 'Status: Idle';
+                            }, 500);
+
+                        } catch (error) {
+                            console.error('Error generating audio:', error);
+                            showMessage('Error: Failed to get AI response.', true);
+                            startBtn.disabled = false;
+                            statusDisplay.textContent = 'Status: Idle';
+                        }
+                    };
+
+                    recognition.onerror = (event) => {
+                        console.error('Speech recognition error:', event.error);
+                        if (event.error !== 'no-speech') {
+                            showMessage(`Speech recognition error: ${event.error}`, true);
+                        }
+                        startBtn.disabled = false;
+                        stopBtn.disabled = true;
+                        statusDisplay.textContent = 'Status: Idle';
+                    };
+
+                    recognition.onend = () => {
+                        console.log('Speech recognition ended.');
+                    };
+
+                    recognition.start();
+
+                } else {
+                    showMessage('Your browser does not support Speech Recognition. Please use Chrome.', true);
+                }
+            }
+
+            startBtn.addEventListener('click', () => {
+                // If there's existing playback, stop it for interruption.
+                if (audioQueue.length > 0) {
+                    audioQueue = []; // Clear the queue
+                    // Stop the current playback if any
+                    // Note: This part needs a way to reference the currently playing audio source.
+                    // For now, restarting recognition will handle the interruption.
+                }
+                startVoiceRecognition();
+            });
+
+            stopBtn.addEventListener('click', () => {
+                if (recognition) {
+                    recognition.stop();
+                }
+                audioQueue = []; // Clear the queue
+                // Stop playback
+                // Note: This part needs a way to reference the currently playing audio source.
+                stopBtn.disabled = true;
+                startBtn.disabled = false;
+                statusDisplay.textContent = 'Status: Idle';
+            });
+        });
+    </script>
+</body>
+</html>
